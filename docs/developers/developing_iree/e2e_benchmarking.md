@@ -5,7 +5,7 @@
 > Note:<br>
 > &nbsp;&nbsp;&nbsp;&nbsp;The TensorFlow integrations are currently being
   refactored. The `bazel` build is deprecated. Refer to
-  https://google.github.io/iree/get-started/getting-started-python for a general
+  https://iree-org.github.io/iree/get-started/getting-started-python for a general
   overview of how to build and execute the e2e tests.
 
 We use our end-to-end TensorFlow integration tests to test compilation and
@@ -14,7 +14,7 @@ This allows us to validate that our benchmarks are behaving as we expect them
 to, and to run them using valid inputs for each model.
 
 This guide assumes that you can run the tensorflow integration tests. See
-[this doc](https://google.github.io/iree/building-from-source/optional-features/)
+[this doc](https://iree-org.github.io/iree/building-from-source/python-bindings-and-importers/)
 for more information. That doc also covers writing new tests, which you'll need
 to do if you'd like to benchmark a new TensorFlow model.
 
@@ -29,8 +29,7 @@ $ cd iree-build/  # Make and cd into some build directory
 $ cmake ../iree -G Ninja \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
-    -DIREE_BUILD_PYTHON_BINDINGS=ON  \
-    -DIREE_BUILD_TENSORFLOW_COMPILER=ON
+    -DIREE_BUILD_PYTHON_BINDINGS=ON
 $ cmake --build .
 # Also from the Python get-started doc, set this environment variable:
 $ export PYTHONPATH=$(pwd)/bindings/python
@@ -85,7 +84,7 @@ include those relevant for benchmarking):
 
 # Example for MatrixOpsStaticModule:
 /tmp/iree/modules/MatrixOpsStaticModule
-  ├── iree_llvmaot
+  ├── iree_llvmcpu
   │   └── compiled.vmfb
   ├── iree_vmvx
   │   └──compiled.vmfb
@@ -116,9 +115,9 @@ benchmark a static left-hand-side batched matmul using `MatrixOpsStaticModule`
 on VMVX run:
 
 ```shell
-$ iree/tools/iree-benchmark-module \
+$ tools/iree-benchmark-module \
   --module_file=/tmp/iree/modules/MatrixOpsStaticModule/iree_vmvx/compiled.vmfb \
-  --driver=vmvx \
+  --device=local-task \
   --entry_function=matmul_lhs_batch \
   --function_input=256x64x32xf32=2 \
   --function_input=32x16xf32=3
@@ -188,15 +187,15 @@ $ ./bazel-bin/tensorflow/lite/tools/benchmark/benchmark_model \
 
 IREE only supports compiling to Android with CMake. Documentation on setting up
 your environment to cross-compile to Android can be found
-[here](https://google.github.io/iree/building-from-source/android/).
+[here](https://iree-org.github.io/iree/building-from-source/android/).
 
 ```shell
 # After following the instructions above up to 'Build all targets', the
 # iree-benchmark-module binary should be in the following directory:
-$ ls build-android/iree/tools/
+$ ls build-android/tools/
 
 # Copy the benchmarking binary to phone.
-$ adb push build-android/iree/tools/iree-benchmark-module /data/local/tmp
+$ adb push build-android/tools/iree-benchmark-module /data/local/tmp
 ```
 
 ### 4.2 Push the IREE's compilation / benchmarking artifacts to the device
@@ -222,7 +221,7 @@ $ adb push /tmp/iree/modules/MatrixOpsStaticModule/iree_vmvx/* \
 ```shell
 $ adb shell /data/local/tmp/iree-benchmark-module \
   --module_file="/data/local/tmp/MatrixOpsStaticModule/iree_vmvx/compiled.vmfb" \
-  --driver=vmvx \
+  --device=local-task \
   --entry_function=matmul_lhs_batch \
   --function_input=256x64x32xf32=2 \
   --function_input=32x16xf32=3

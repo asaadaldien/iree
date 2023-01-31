@@ -10,7 +10,6 @@ This script is meant to be used by Buildkite for automation.
 
 Example usage:
   # Export necessary environment variables:
-  export IREE_DASHBOARD_URL=...
   export IREE_DASHBOARD_API_TOKEN=...
   # Then run the script:
   python3 upload_benchmarks.py /path/to/benchmark/json/file
@@ -19,28 +18,30 @@ Example usage:
 import argparse
 import json
 import os
-import re
+import pathlib
 import requests
-import subprocess
-import time
 
 from typing import Any, Dict, Optional
 
-from common.benchmark_definition import (BenchmarkInfo, BenchmarkResults,
+from common.common_arguments import expand_and_check_file_paths
+from common.benchmark_presentation import (COMPILATION_METRICS_TO_TABLE_MAPPERS,
+                                           collect_all_compilation_metrics)
+from common.benchmark_definition import (BenchmarkResults,
                                          execute_cmd_and_get_output)
 from common.benchmark_thresholds import BENCHMARK_THRESHOLDS
 
-IREE_GITHUB_COMMIT_URL_PREFIX = 'https://github.com/google/iree/commit'
+IREE_DASHBOARD_URL = "https://perf.iree.dev"
+IREE_GITHUB_COMMIT_URL_PREFIX = 'https://github.com/iree-org/iree/commit'
 IREE_PROJECT_ID = 'IREE'
-THIS_DIRECTORY = os.path.dirname(os.path.realpath(__file__))
+THIS_DIRECTORY = pathlib.Path(__file__).resolve().parent
 
 COMMON_DESCRIIPTION = """
 <br>
 For the graph, the x axis is the Git commit index, and the y axis is the
-measured latency in milliseconds.
+measured metrics. The unit for the numbers is shown in the "Unit" dropdown.
 <br>
-See <a href="https://github.com/google/iree/tree/main/benchmarks/dashboard.md">
-https://github.com/google/iree/tree/main/benchmarks/dashboard.md
+See <a href="https://github.com/iree-org/iree/tree/main/benchmarks/dashboard.md">
+https://github.com/iree-org/iree/tree/main/benchmarks/dashboard.md
 </a> for benchmark philosophy, specification, and definitions.
 """
 
@@ -66,16 +67,15 @@ IREE_TFLITE_MODEL_SOURCE_URL = {
 }
 
 
-def get_model_description(benchmark_info: BenchmarkInfo) -> Optional[str]:
+def get_model_description(model_name: str, model_source: str) -> Optional[str]:
   """Gets the model description for the given benchmark."""
   url = None
-  name = benchmark_info.model_name
-  if benchmark_info.model_source == "TensorFlow":
-    url = IREE_TF_MODEL_SOURCE_URL.get(name)
-  elif benchmark_info.model_source == "TFLite":
-    url = IREE_TFLITE_MODEL_SOURCE_URL.get(name)
+  if model_source == "TensorFlow":
+    url = IREE_TF_MODEL_SOURCE_URL.get(model_name)
+  elif model_source == "TFLite":
+    url = IREE_TFLITE_MODEL_SOURCE_URL.get(model_name)
   if url is not None:
-    description = f'{name} from <a href="{url}">{url}</a>.'
+    description = f'{model_name} from <a href="{url}">{url}</a>.'
     return description
   return None
 
@@ -113,6 +113,7 @@ def get_git_commit_info(commit: str, verbose: bool = False) -> Dict[str, str]:
 
 def compose_series_payload(project_id: str,
                            series_id: str,
+                           series_unit: str,
                            series_description: bool = None,
                            average_range: str = '5%',
                            average_min_count: int = 3,
@@ -122,6 +123,7 @@ def compose_series_payload(project_id: str,
   payload = {
       'projectId': project_id,
       'serieId': series_id,
+      'serieUnit': series_unit,
       'analyse': {
           'benchmark': {
               'range': average_range,
@@ -157,12 +159,14 @@ def compose_build_payload(project_id: str,
 def compose_sample_payload(project_id: str,
                            series_id: str,
                            build_id: int,
+                           sample_unit: str,
                            sample_value: int,
                            override: bool = False) -> Dict[str, Any]:
   """Composes the payload dictionary for a sample."""
   return {
       'projectId': project_id,
       'serieId': series_id,
+      'sampleUnit': sample_unit,
       'sample': {
           'buildId': build_id,
           'value': sample_value
@@ -201,17 +205,16 @@ def post_to_dashboard(url: str,
   code = response.status_code
   if code != 200:
     raise requests.RequestException(
-        f'Failed to post to dashboard server with status code {code}')
+        f'Failed to post to dashboard server with {code} - {response.text}')
 
 
 def add_new_iree_series(series_id: str,
+                        series_unit: str,
                         series_description: Optional[str] = None,
                         override: bool = False,
                         dry_run: bool = False,
                         verbose: bool = False):
   """Posts a new series to the dashboard."""
-  url = get_required_env_var('IREE_DASHBOARD_URL')
-
   average_range = None
   for threshold in BENCHMARK_THRESHOLDS:
     if threshold.regex.match(series_id):
@@ -222,10 +225,11 @@ def add_new_iree_series(series_id: str,
 
   payload = compose_series_payload(IREE_PROJECT_ID,
                                    series_id,
+                                   series_unit,
                                    series_description,
                                    average_range=average_range,
                                    override=override)
-  post_to_dashboard(f'{url}/apis/addSerie',
+  post_to_dashboard(f'{IREE_DASHBOARD_URL}/apis/v2/addSerie',
                     payload,
                     dry_run=dry_run,
                     verbose=verbose)
@@ -237,11 +241,10 @@ def add_new_iree_build(build_id: int,
                        dry_run: bool = False,
                        verbose: bool = False):
   """Posts a new build to the dashboard."""
-  url = get_required_env_var('IREE_DASHBOARD_URL')
   payload = compose_build_payload(IREE_PROJECT_ID,
                                   IREE_GITHUB_COMMIT_URL_PREFIX, build_id,
                                   commit, override)
-  post_to_dashboard(f'{url}/apis/addBuild',
+  post_to_dashboard(f'{IREE_DASHBOARD_URL}/apis/addBuild',
                     payload,
                     dry_run=dry_run,
                     verbose=verbose)
@@ -249,15 +252,15 @@ def add_new_iree_build(build_id: int,
 
 def add_new_sample(series_id: str,
                    build_id: int,
+                   sample_unit: str,
                    sample_value: int,
                    override: bool = False,
                    dry_run: bool = False,
                    verbose: bool = False):
   """Posts a new sample to the dashboard."""
-  url = get_required_env_var('IREE_DASHBOARD_URL')
   payload = compose_sample_payload(IREE_PROJECT_ID, series_id, build_id,
-                                   sample_value, override)
-  post_to_dashboard(f'{url}/apis/addSample',
+                                   sample_unit, sample_value, override)
+  post_to_dashboard(f'{IREE_DASHBOARD_URL}/apis/v2/addSample',
                     payload,
                     dry_run=dry_run,
                     verbose=verbose)
@@ -266,18 +269,21 @@ def add_new_sample(series_id: str,
 def parse_arguments():
   """Parses command-line options."""
 
-  def check_file_path(path):
-    if os.path.isfile(path):
-      return path
-    else:
-      raise ValueError(path)
-
   parser = argparse.ArgumentParser()
-  parser.add_argument('benchmark_files',
-                      metavar='<benchmark-json-file>',
-                      type=check_file_path,
-                      nargs='+',
-                      help='Path to the JSON file containing benchmark results')
+  parser.add_argument(
+      '--benchmark_files',
+      metavar='<benchmark-json-files>',
+      required=True,
+      nargs='+',
+      help=("Paths to the JSON files containing benchmark results, "
+            "accepts wildcards"))
+  parser.add_argument(
+      "--compile_stats_files",
+      metavar="<compile-stats-json-files>",
+      default=[],
+      nargs="+",
+      help=("Paths to the JSON files containing compilation statistics, "
+            "accepts wildcards"))
   parser.add_argument("--dry-run",
                       action="store_true",
                       help="Print the comment instead of posting to dashboard")
@@ -290,12 +296,14 @@ def parse_arguments():
 
 
 def main(args):
+  benchmark_files = expand_and_check_file_paths(args.benchmark_files)
+  compile_stats_files = expand_and_check_file_paths(args.compile_stats_files)
+
   # Collect benchmark results from all files.
   all_results = []
-  for benchmark_file in args.benchmark_files:
-    with open(benchmark_file) as f:
-      content = f.read()
-    all_results.append(BenchmarkResults.from_json_str(content))
+  for benchmark_file in benchmark_files:
+    all_results.append(
+        BenchmarkResults.from_json_str(benchmark_file.read_text()))
   for other_results in all_results[1:]:
     all_results[0].merge(other_results)
   all_results = all_results[0]
@@ -303,8 +311,12 @@ def main(args):
   # Register a new build for the current commit.
   commit_hash = get_git_commit_hash(all_results.commit, verbose=args.verbose)
   commit_count = get_git_total_commit_count(commit_hash, verbose=args.verbose)
+
+  # Allow override to support uploading data for the same build in
+  # different batches.
   add_new_iree_build(commit_count,
                      commit_hash,
+                     override=True,
                      dry_run=args.dry_run,
                      verbose=args.verbose)
 
@@ -312,7 +324,7 @@ def main(args):
   aggregate_results = {}
   for benchmark_index in range(len(all_results.benchmarks)):
     benchmark_case = all_results.benchmarks[benchmark_index]
-    benchmark_info = benchmark_case["benchmark"]
+    benchmark_info = benchmark_case.benchmark_info
 
     # Make sure each benchmark has a unique name.
     name = str(benchmark_info)
@@ -324,22 +336,54 @@ def main(args):
 
   # Upload benchmark results to the dashboard.
   for series_id, (sample_value, benchmark_info) in aggregate_results.items():
-    description = get_model_description(benchmark_info)
+    description = get_model_description(benchmark_info.model_name,
+                                        benchmark_info.model_source)
     if description is None:
       description = ""
     description += COMMON_DESCRIIPTION
 
     # Override by default to allow updates to the series.
-    add_new_iree_series(series_id,
-                        description,
+    add_new_iree_series(series_id=series_id,
+                        series_unit="ns",
+                        series_description=description,
                         override=True,
                         dry_run=args.dry_run,
                         verbose=args.verbose)
-    add_new_sample(series_id,
-                   commit_count,
-                   sample_value,
+    add_new_sample(series_id=series_id,
+                   build_id=commit_count,
+                   sample_unit="ns",
+                   sample_value=sample_value,
                    dry_run=args.dry_run,
                    verbose=args.verbose)
+
+  all_compilation_metrics = collect_all_compilation_metrics(
+      compile_stats_files=compile_stats_files, expected_pr_commit=commit_hash)
+  for name, compile_metrics in all_compilation_metrics.items():
+    description = get_model_description(
+        compile_metrics.compilation_info.model_name,
+        compile_metrics.compilation_info.model_source)
+    if description is None:
+      description = ""
+    description += COMMON_DESCRIIPTION
+
+    for mapper in COMPILATION_METRICS_TO_TABLE_MAPPERS:
+      sample_value, _ = mapper.get_current_and_base_value(compile_metrics)
+      series_id = mapper.get_series_name(name)
+      series_unit = mapper.get_unit()
+
+      # Override by default to allow updates to the series.
+      add_new_iree_series(series_id=series_id,
+                          series_unit=series_unit,
+                          series_description=description,
+                          override=True,
+                          dry_run=args.dry_run,
+                          verbose=args.verbose)
+      add_new_sample(series_id=series_id,
+                     build_id=commit_count,
+                     sample_unit=series_unit,
+                     sample_value=sample_value,
+                     dry_run=args.dry_run,
+                     verbose=args.verbose)
 
 
 if __name__ == "__main__":

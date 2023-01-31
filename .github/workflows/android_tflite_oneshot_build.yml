@@ -7,11 +7,11 @@ on:
 
 jobs:
   build_android_with_docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     env:
-      ANDROID_CONTAINER: "gcr.io/iree-oss/gradle-android@sha256:54cddc42e13d63da5adf495acb4e96c2773b66a1169cf8a9aac26a21f4166e2e"
+      ANDROID_CONTAINER: "gcr.io/iree-oss/gradle-android@sha256:8dcf669ed1536e02ee5f1377c018e7010a7ef0c7d39c89f973836ca7ffb8299a"
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@e2f20e631ae6d7dd3b768f56a5d2af784dd54791 # v2.5.0
         with:
           submodules: true
       - name: Execute Android Build
@@ -21,7 +21,7 @@ jobs:
           -v $PWD:/work \
           "${ANDROID_CONTAINER}" \
           bash -c build_tools/gradle/build_tflite_android_library.sh
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # v2
         with:
-          path: ./bindings/tflite/java/build/outputs/aar/*.aar
+          path: ./runtime/bindings/tflite/java/build/outputs/aar/*.aar
           retention-days: 1
